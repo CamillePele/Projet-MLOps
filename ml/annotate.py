@@ -202,7 +202,7 @@ def process_files(dossier: Path, csv_output_name: str) -> pd.DataFrame:
         # on récupère seulement les attributs voulus
         sous_df = df[df["C1"].isin(ATTRIBUTS)].set_index("C1")["C2"]
 
-        ligne = {"filename": csv_path.name}
+        ligne = {"filename": csv_path.stem}
 
         # IDs (valeurs C2) brutes, utilisées juste pour les mappings
         facial_hair_id = sous_df.get("facial_hair", pd.NA)
