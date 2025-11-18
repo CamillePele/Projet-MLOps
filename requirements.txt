@@ -5,3 +5,6 @@ torchvision
 pandas
 pyspark
 opencv-python
+matplotlib
+scikit-learn
+seaborn
