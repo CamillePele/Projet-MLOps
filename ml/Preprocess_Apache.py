@@ -7,10 +7,11 @@ import numpy as np
 
 
 # === Configuration (modifiable) ===
-INPUT_DIR = '../dataset/'
-OUTPUT_DIR = '../dataset_prepro/'
+INPUT_DIR = 'dataset/'
+OUTPUT_DIR = 'dataset_prepro/'
 PARTITIONS = 4
 MAX_FILES = 0  # 0 = tous
+TAILLE_CIBLE = (64, 64) # (largeur, hauteur)
 
 # === Initialisation Spark en local ===
 spark = SparkSession.builder.master('local[*]').appName('PreprocessFaces').getOrCreate()
@@ -36,43 +37,39 @@ def load(path):
 
 
 def preprocess(item):
-	"""Convertit en RGBA, rogner la transparence, redimensionne en conservant le ratio
-	et remplit avec de la transparence pour obtenir exactement 64x64. Sauvegarde en PNG
-	dans `OUTPUT_DIR` et retourne un dict contenant `out_path`.
-	"""
-	src_path = item['path']
-	try:
-		with Image.open(src_path) as img:
-			img_rgba = img.convert('RGBA')
+	img = item['img']
+	# Convertir en niveaux de gris
+	gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-			# trim transparent
-			alpha = img_rgba.getchannel('A')
-			bbox = alpha.getbbox()
-			if bbox:
-				trimmed = img_rgba.crop(bbox)
-			else:
-				trimmed = img_rgba
+    # Appliquer un seuillage pour obtenir une image binaire
+    # Étant donné que le fond est blanc et l'objet est coloré,
+    # on peut inverser le seuil pour que l'objet soit blanc sur fond noir.
+    # On utilise cv2.THRESH_BINARY_INV pour un fond blanc (255) et un objet noir (0)
+    # puis on inverse pour avoir l'objet blanc sur fond noir
+	_, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
 
-			# resize preserving aspect ratio and pad to 64x64
-			target = (64, 64)
-			trimmed.thumbnail(target, Image.LANCZOS)
-			out_img = Image.new('RGBA', target, (0, 0, 0, 0))
-			x = (target[0] - trimmed.width) // 2
-			y = (target[1] - trimmed.height) // 2
-			out_img.paste(trimmed, (x, y), trimmed)
+    # Trouver les contours
+    # cv2.RETR_EXTERNAL ne récupère que les contours externes
+    # cv2.CHAIN_APPROX_SIMPLE compresse les segments de lignes horizontaux, verticaux et diagonaux
+	contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-			# save as PNG to preserve transparency
-			out_dir = OUTPUT_DIR
-			os.makedirs(out_dir, exist_ok=True)
-			base = os.path.splitext(os.path.basename(src_path))[0]
-			out_path = os.path.join(out_dir, base + '.png')
-			out_img.save(out_path, 'PNG')
+	if len(contours) == 0:
+		print("Aucun contour détecté. Assurez-vous que l'objet est bien contrasté par rapport au fond.")
+	else:
+		# Trouver le plus grand contour (qui devrait être notre visage)
+		largest_contour = max(contours, key=cv2.contourArea)
 
-			return {'path': src_path, 'out_path': out_path}
-	except Exception as e:
-		print(f"ERREUR lors du traitement de {src_path}: {e}")
-		return None
+		# Obtenir la boîte englobante (bounding box) de ce contour
+		x, y, w, h = cv2.boundingRect(largest_contour)
 
+		# --- Rogner l'image ---
+		# On utilise les coordonnées obtenues pour trancher l'image
+		img_cropped = img[y:y+h, x:x+w]
+
+        # --- Redimensionner l'image rognée en 64x64 (sans garder la proportionnalité) ---
+		img_final_resized = cv2.resize(img_cropped, TAILLE_CIBLE, interpolation=cv2.INTER_AREA)
+		item['img'] = img_final_resized
+	return item
 
 def finalize(item):
 	# sauvegarde l'image traitée et retourne le chemin

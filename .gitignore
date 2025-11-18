@@ -149,8 +149,10 @@ cython_debug/
 
 # Ignore dataset contents but keep the dataset folder in git via a tracked .gitkeep
 # ignore all files in dataset/ except .gitkeep
-dataset/*
-!dataset/.gitkeep
-
+dataset/
+dataset_prepro/
+dataset_transformed/
+*.png
+*.zip
 # MacOS files
 .DS_Store

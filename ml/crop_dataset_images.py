@@ -1,128 +1,106 @@
 #!/usr/bin/env python3
-"""Crop, resize and pad images from a dataset folder.
+import os
+import cv2
+import numpy as np
 
-Workflow per image:
-- Convert to RGBA
-- Trim transparent pixels to the minimal bounding box
-- Resize to fit within 64x64 preserving aspect ratio
-- Pad with transparent pixels to make exactly 64x64
+# === Configuration (modifiable) ===
+INPUT_DIR = 'dataset/'
+OUTPUT_DIR = 'dataset_transformed/'
+MAX_FILES = 0  # 0 = tous
+TAILLE_CIBLE = (64, 64) # (largeur, hauteur)
 
-Places transformed images in an output folder mirroring input structure.
-Supports --dry-run to only print planned actions.
-"""
-from __future__ import annotations
+# === Fonctions ===
 
-import argparse
-from pathlib import Path
-from typing import Tuple
+def gather_image_files(input_dir, exts=('.png', '.jpg', '.jpeg')):
+    files = []
+    for root, _, filenames in os.walk(input_dir):
+        for f in filenames:
+            if f.lower().endswith(exts):
+                files.append(os.path.join(root, f))
+    return files
 
-from PIL import Image
-from tqdm import tqdm
-
-
-def trim_transparent(img: Image.Image) -> Image.Image:
-    """Trim transparent borders from an RGBA image.
-    
-    Assumes img is in RGBA mode.
+def process_image(path):
     """
-    # Obtenir le canal alpha
-    alpha = img.getchannel("A")
+    Fonction qui combine load, preprocess et finalize pour une image donnée.
+    Retourne True si succès, False sinon.
+    """
     
-    # Obtenir la bounding box des pixels non-transparents (non-zéro)
-    bbox = alpha.getbbox()
-    
-    if bbox:
-        return img.crop(bbox)
-    return img  # Retourne l'original si l'image est vide ou déjà rognée
+    # 1. LOAD
+    img = cv2.imread(path)
+    if img is None:
+        print(f"[Erreur] Impossible de lire : {path}")
+        return False
 
+    # 2. PREPROCESS
+    # Convertir en niveaux de gris
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-def resize_and_pad(img: Image.Image, size: Tuple[int, int] = (64, 64)) -> Image.Image:
-    """Resize image preserving aspect ratio and pad with transparency to target size."""
-    target_w, target_h = size
-    # thumbnail modifie l'image en place pour s'adapter à la taille, en gardant le ratio
-    img.thumbnail((target_w, target_h), Image.LANCZOS)
-    
-    # Crée un fond transparent (RGBA avec 0 pour l'alpha)
-    out = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
-    
-    # Calcule la position centrée
-    x = (target_w - img.width) // 2
-    y = (target_h - img.height) // 2
-    
-    # Colle l'image redimensionnée (le canal alpha de 'img' est utilisé comme masque)
-    out.paste(img, (x, y))
-    return out
+    # Seuillage (Fond blanc -> binaire inversé pour avoir l'objet en blanc)
+    _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
 
+    # Trouver les contours
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-def process_file(src_path: Path, dst_path: Path, dry_run: bool = False) -> None:
-    """Traite une seule image : convertit RGBA, trim, resize, pad."""
-    try:
-        with Image.open(src_path) as img:
-            # 1. Convertir en RGBA immédiatement pour standardiser le pipeline
-            img_rgba = img.convert("RGBA")
-            
-            # 2. Rogner la transparence
-            trimmed = trim_transparent(img_rgba)
-            
-            # 3. Redimensionner et combler avec de la transparence
-            final = resize_and_pad(trimmed, (64, 64))
-            
-            if not dry_run:
-                dst_path.parent.mkdir(parents=True, exist_ok=True)
-                # Sauvegarde en PNG pour préserver la transparence
-                final.save(dst_path, "PNG") 
-    except Exception as e:
-        tqdm.write(f"ERREUR lors du traitement de {src_path}: {e}")
+    img_final = None
 
+    if len(contours) == 0:
+        print(f"[Info] Aucun contour détecté pour : {path}")
+        return False
+    else:
+        # Trouver le plus grand contour
+        largest_contour = max(contours, key=cv2.contourArea)
 
-def is_image_file(p: Path) -> bool:
-    """Vérifie si le fichier est une image basée sur l'extension."""
-    return p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tiff"}
+        # Obtenir la boîte englobante
+        x, y, w, h = cv2.boundingRect(largest_contour)
 
+        # Rogner l'image
+        img_cropped = img[y:y+h, x:x+w]
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Recadre (transparence), redimensionne et comble (transparence) les images à 64x64")
-    parser.add_argument("--input-dir", "-i", type=Path, default=Path("dataset"), help="Dossier d'entrée du dataset")
-    parser.add_argument("--output-dir", "-o", type=Path, default=Path("dataset_transformed"), help="Dossier de sortie")
-    parser.add_argument("--dry-run", action="store_true", help="N'écrit pas de fichiers, affiche seulement les actions prévues")
-    parser.add_argument("--max-files", type=int, default=None, help="Nombre maximum d'images à traiter (défaut: toutes)")
-    args = parser.parse_args()
+        # Sécurité : vérifier si le crop n'est pas vide
+        if img_cropped.size == 0:
+            print(f"[Erreur] Crop vide pour : {path}")
+            return False
 
-    src_root = args.input_dir
-    dst_root = args.output_dir
+        # Redimensionner en 64x64 (sans proportionnalité)
+        img_final = cv2.resize(img_cropped, TAILLE_CIBLE, interpolation=cv2.INTER_AREA)
 
-    if not src_root.exists():
-        print(f"Le dossier d'entrée {src_root} n'existe pas.")
-        return
-
-    # Trouve tous les fichiers image récursivement
-    image_files = [p for p in src_root.rglob("*") if p.is_file() and is_image_file(p)]
-    
-    if not image_files:
-        print(f"Aucun fichier image trouvé dans {src_root}")
-        return
-
-    total_found = len(image_files)
-
-    print_limit = ""
-    if args.max_files is not None and args.max_files > 0:
-        image_files = image_files[:args.max_files]
-        print_limit = f" (traitement des {len(image_files)} premiers)"
-
-    print(f"Trouvé {total_found} image(s) dans {src_root}{print_limit}. Dry run={args.dry_run}")
-
-    # Boucle avec tqdm
-    for src in tqdm(image_files, desc="Traitement des images", unit="img"):
-        rel = src.relative_to(src_root)
-        dst = dst_root / rel
-        # S'assure que la sortie est .png pour garder la transparence
-        dst = dst.with_suffix(".png")
+    # 3. FINALIZE (Sauvegarde)
+    if img_final is not None:
+        # Créer le dossier de sortie s'il n'existe pas
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
         
-        # --- Appel de process_file mis à jour (sans tol) ---
-        process_file(src, dst, dry_run=args.dry_run)
+        # Construire le nom de fichier de sortie
+        out_name = os.path.basename(path)
+        out_path = os.path.join(OUTPUT_DIR, out_name)
+        
+        cv2.imwrite(out_path, img_final)
+        return True
+    
+    return False
 
-    print("Traitement terminé.")
-
+# === Main Loop (Remplacement du Pipeline Spark) ===
 
 if __name__ == "__main__":
-    main()
+    print("--- Démarrage du traitement (Mode Local sans Spark) ---")
+    
+    # 1. Récupérer les fichiers
+    files = gather_image_files(INPUT_DIR)
+    print(f"Fichiers trouvés : {len(files)}")
+
+    # Limiter le nombre de fichiers si demandé
+    if MAX_FILES and MAX_FILES > 0:
+        files = files[:MAX_FILES]
+        print(f"Traitement limité aux {MAX_FILES} premiers fichiers.")
+
+    # 2. Boucle de traitement
+    count_success = 0
+    
+    for i, file_path in enumerate(files):
+        # Petit affichage de progression
+        print(f"Traitement {i+1}/{len(files)} : {os.path.basename(file_path)}")
+        
+        if process_image(file_path):
+            count_success += 1
+
+    print("-" * 30)
+    print(f"Terminé. {count_success}/{len(files)} images traitées et sauvegardées dans '{OUTPUT_DIR}'.")
