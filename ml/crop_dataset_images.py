@@ -2,10 +2,11 @@
 import os
 import cv2
 import numpy as np
+from tqdm import tqdm
 
 # === Configuration (modifiable) ===
 INPUT_DIR = 'dataset/'
-OUTPUT_DIR = 'dataset_transformed/'
+OUTPUT_DIR = 'dataset_prepro/'
 MAX_FILES = 0  # 0 = tous
 TAILLE_CIBLE = (64, 64) # (largeur, hauteur)
 
@@ -28,7 +29,6 @@ def process_image(path):
     # 1. LOAD
     img = cv2.imread(path)
     if img is None:
-        print(f"[Erreur] Impossible de lire : {path}")
         return False
 
     # 2. PREPROCESS
@@ -44,7 +44,6 @@ def process_image(path):
     img_final = None
 
     if len(contours) == 0:
-        print(f"[Info] Aucun contour détecté pour : {path}")
         return False
     else:
         # Trouver le plus grand contour
@@ -58,7 +57,6 @@ def process_image(path):
 
         # Sécurité : vérifier si le crop n'est pas vide
         if img_cropped.size == 0:
-            print(f"[Erreur] Crop vide pour : {path}")
             return False
 
         # Redimensionner en 64x64 (sans proportionnalité)
@@ -81,26 +79,18 @@ def process_image(path):
 # === Main Loop (Remplacement du Pipeline Spark) ===
 
 if __name__ == "__main__":
-    print("--- Démarrage du traitement (Mode Local sans Spark) ---")
-    
     # 1. Récupérer les fichiers
     files = gather_image_files(INPUT_DIR)
-    print(f"Fichiers trouvés : {len(files)}")
 
     # Limiter le nombre de fichiers si demandé
     if MAX_FILES and MAX_FILES > 0:
         files = files[:MAX_FILES]
-        print(f"Traitement limité aux {MAX_FILES} premiers fichiers.")
 
-    # 2. Boucle de traitement
+    # 2. Boucle de traitement avec barre de progression
     count_success = 0
     
-    for i, file_path in enumerate(files):
-        # Petit affichage de progression
-        print(f"Traitement {i+1}/{len(files)} : {os.path.basename(file_path)}")
-        
+    for file_path in tqdm(files, desc="Traitement des images", unit="img"):
         if process_image(file_path):
             count_success += 1
 
-    print("-" * 30)
-    print(f"Terminé. {count_success}/{len(files)} images traitées et sauvegardées dans '{OUTPUT_DIR}'.")
+    print(f"\nTerminé : {count_success}/{len(files)} images traitées et sauvegardées dans '{OUTPUT_DIR}'.")
