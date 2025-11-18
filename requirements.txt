@@ -2,3 +2,5 @@ Pillow
 tqdm
 torch
 torchvision
+pandas
+pyspark
