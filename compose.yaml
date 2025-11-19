@@ -109,6 +109,24 @@ services:
     deploy:
       replicas: 1
 
+  # MLFlow Tracking Server
+  mlflow:
+    build:
+      context: ./docker
+      dockerfile: MLFlow.Dockerfile
+    container_name: mlops-mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mlops_db
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   rabbitmq_data:
