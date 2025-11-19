@@ -1,5 +1,6 @@
 apis/BatchesApi.ts
 apis/ImagesApi.ts
+apis/ModelsApi.ts
 apis/PredictionsApi.ts
 apis/UploadApi.ts
 apis/index.ts
@@ -7,6 +8,9 @@ docs/BatchDto.md
 docs/BatchesApi.md
 docs/ImageDto.md
 docs/ImagesApi.md
+docs/ModelDto.md
+docs/ModelsApi.md
+docs/ModelsResponseDto.md
 docs/PredictionDto.md
 docs/PredictionResultDto.md
 docs/PredictionsApi.md
@@ -15,6 +19,8 @@ docs/UploadResponseDto.md
 index.ts
 models/BatchDto.ts
 models/ImageDto.ts
+models/ModelDto.ts
+models/ModelsResponseDto.ts
 models/PredictionDto.ts
 models/PredictionResultDto.ts
 models/UploadResponseDto.ts

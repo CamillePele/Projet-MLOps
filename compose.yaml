@@ -103,9 +103,12 @@ services:
       - ./ml:/ml
     environment:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     depends_on:
       rabbitmq:
         condition: service_healthy
+      mlflow:
+        condition: service_started
     deploy:
       replicas: 1
 
@@ -117,6 +120,8 @@ services:
     container_name: mlops-mlflow
     ports:
       - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -130,3 +135,4 @@ services:
 volumes:
   postgres_data:
   rabbitmq_data:
+  mlflow_artifacts:
