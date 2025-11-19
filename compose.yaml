@@ -59,7 +59,7 @@ services:
       dockerfile: Dockerfile
     container_name: mlops-api
     # Try to generate migration (ignore if no changes), then run migrations, then start
-    command: sh -c "pnpm run migration:generate || true && pnpm run migration:run && pnpm run start:dev --preserveWatchOutput"
+    command: sh -c "pnpm run start:dev --preserveWatchOutput"
     ports:
       - "3000:3000"
     volumes:
