@@ -1,6 +1,114 @@
 services:
-  # TODO: Add MLFlow service
-  # TODO: Add Airflow service ? (pas sur si besoin)
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: mlops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mlops_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # TODO: Add Grafana service
-  # TODO: Add Prometheus service
+  # Adminer - Lightweight Database Management
+  adminer:
+    image: adminer:latest
+    container_name: mlops-adminer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: nette
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # RabbitMQ - Message Queue
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: mlops-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"   # AMQP port
+      - "15672:15672" # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # API Service (NestJS)
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    container_name: mlops-api
+    # Try to generate migration (ignore if no changes), then run migrations, then start
+    command: sh -c "pnpm run migration:generate || true && pnpm run migration:run && pnpm run start:dev --preserveWatchOutput"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/api:/app
+      - /app/node_modules
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      DB_DATABASE: mlops_db
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  # Frontend Service (Vite/React)
+  front:
+    build:
+      context: ./apps/front
+      dockerfile: Dockerfile
+    container_name: mlops-front
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./apps/front:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: http://localhost:3000
+
+  # Prediction Service (Python)
+  prediction-service:
+    build:
+      context: ./apps/prediction-service
+      dockerfile: Dockerfile
+    # No container_name to allow scaling via --scale
+    volumes:
+      - ./apps/prediction-service:/app
+      - ./ml:/ml
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    deploy:
+      replicas: 1
+
+volumes:
+  postgres_data:
+  rabbitmq_data:
