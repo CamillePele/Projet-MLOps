@@ -1,32 +1,51 @@
-import { useState, useRef } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { Upload, X, FileArchive, Image as ImageIcon, Loader2 } from 'lucide-react';
+import { FileArchive, Image as ImageIcon, Loader2, Upload, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
+
+import { modelsApi, uploadApi } from '@/api-client';
 import { Button } from '@/components/ui/button';
 import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-    DialogTrigger,
-} from "@/components/ui/dialog";
-import { uploadApi } from '@/api-client';
+    Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger
+} from '@/components/ui/dialog';
+import { Label } from '@/components/ui/label';
+import {
+    Select, SelectContent, SelectItem, SelectTrigger, SelectValue
+} from '@/components/ui/select';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 export function UploadDialog() {
     const [open, setOpen] = useState(false);
     const [files, setFiles] = useState<File[]>([]);
+    const [selectedModel, setSelectedModel] = useState<string>('');
     const fileInputRef = useRef<HTMLInputElement>(null);
     const queryClient = useQueryClient();
+
+    // Fetch available models from API
+    const { data: modelsData, isLoading: isLoadingModels } = useQuery({
+        queryKey: ['mlflow-models'],
+        queryFn: () => modelsApi.modelsControllerGetModels(),
+        refetchInterval: 30000, // Refetch every 30 seconds
+    });
+
+    // Set default model to best model when data loads
+    useEffect(() => {
+        if (modelsData?.bestModel && !selectedModel) {
+            setSelectedModel(modelsData.bestModel.uri);
+        }
+    }, [modelsData]);
 
     const { mutate: uploadFiles, isPending } = useMutation({
         mutationFn: async (filesToUpload: File[]) => {
             // Upload all files using uploadControllerUploadImages
             // The API handles both individual images and ZIP archives
-            const promises = filesToUpload.map(file =>
-                uploadApi.uploadControllerUploadImages({ file })
-            );
+            const promises = filesToUpload.map(file => {
+                const formData = new FormData();
+                formData.append('file', file);
+                if (selectedModel) {
+                    formData.append('modelName', selectedModel);
+                }
+                return uploadApi.uploadControllerUploadImages({ file, modelName: selectedModel });
+            });
             return Promise.all(promises);
         },
         onSuccess: () => {
@@ -73,6 +92,39 @@ export function UploadDialog() {
                 </DialogHeader>
 
                 <div className="grid gap-4 py-4">
+                    {/* Model Selection */}
+                    <div className="grid gap-2">
+                        <Label htmlFor="model-select">Model</Label>
+                        <Select
+                            value={selectedModel}
+                            onValueChange={setSelectedModel}
+                            disabled={isLoadingModels || !modelsData?.models.length}
+                        >
+                            <SelectTrigger id="model-select">
+                                <SelectValue placeholder={
+                                    isLoadingModels
+                                        ? "Loading models..."
+                                        : modelsData?.models.length
+                                            ? "Select a model"
+                                            : "No models available"
+                                } />
+                            </SelectTrigger>
+                            <SelectContent>
+                                {modelsData?.models.map((model) => (
+                                    <SelectItem key={model.id} value={model.uri}>
+                                        {model.uri === modelsData.bestModel?.uri && "⭐ "}
+                                        {model.name}
+                                    </SelectItem>
+                                ))}
+                            </SelectContent>
+                        </Select>
+                        {modelsData?.bestModel && selectedModel === modelsData.bestModel.uri && (
+                            <p className="text-xs text-muted-foreground">
+                                ⭐ Best model (lowest validation loss)
+                            </p>
+                        )}
+                    </div>
+
                     <div
                         className="border-2 border-dashed rounded-lg p-8 text-center hover:bg-muted/50 transition-colors cursor-pointer"
                         onClick={() => fileInputRef.current?.click()}
@@ -126,7 +178,10 @@ export function UploadDialog() {
                     <Button variant="outline" onClick={() => setFiles([])} disabled={isPending}>
                         Clear
                     </Button>
-                    <Button onClick={handleUpload} disabled={files.length === 0 || isPending}>
+                    <Button
+                        onClick={handleUpload}
+                        disabled={files.length === 0 || isPending || !selectedModel}
+                    >
                         {isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                         Upload {files.length > 0 && `(${files.length})`}
                     </Button>
