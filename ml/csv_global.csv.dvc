@@ -1,0 +1,5 @@
+outs:
+- md5: 89a15e98bc9aba0e6c482ba9ebfd2130
+  size: 492677
+  hash: md5
+  path: csv_global.csv
