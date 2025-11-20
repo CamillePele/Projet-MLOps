@@ -153,5 +153,6 @@ dataset_prepro/
 dataset_transformed/
 *.png
 *.zip
+*.csv
 # MacOS files
 .DS_Store
