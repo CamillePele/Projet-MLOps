@@ -22,7 +22,7 @@ export class PredictionResultDto {
         enum: ['bald', 'short', 'long'],
         example: 'short',
     })
-    hairLength: 'bald' | 'short' | 'long';
+    hairLength: 'long' | 'short' | 'bald';
 }
 
 export class PredictionDto {

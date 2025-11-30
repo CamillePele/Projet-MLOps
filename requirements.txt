@@ -10,4 +10,5 @@ scikit-learn
 seaborn
 mlflow
 hyperopt
+boto3
 numpy

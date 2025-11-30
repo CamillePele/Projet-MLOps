@@ -1,383 +1,354 @@
 import os
 import json
 import time
-import random
 import base64
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 from io import BytesIO
+from collections import OrderedDict
 import pika
 from dotenv import load_dotenv
-import mlflow
+import mlflow.pytorch
 import torch
+import torch.nn as nn
 from PIL import Image
 from torchvision import transforms
 import numpy as np
 import cv2
+from pydantic import BaseModel, Field
+import boto3
 
-# Load environment variables
+# --- Configuration & Env ---
 load_dotenv()
 
-# Configuration
 RABBITMQ_URL = os.getenv('RABBITMQ_URL', 'amqp://guest:guest@localhost:5672')
 PREDICTION_QUEUE = os.getenv('RABBITMQ_PREDICTION_QUEUE', 'prediction_queue')
 RESULT_QUEUE = os.getenv('RABBITMQ_RESULT_QUEUE', 'prediction_result_queue')
-MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI', 'http://mlflow:5000')
+MLFLOW_TRACKING_URI = os.getenv('MLFLOW_TRACKING_URI', 'http://localhost:5000') # Attention localhost vs mlflow service name
 
-# Set MLflow tracking URI
+# AWS / MinIO Configuration
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID', 'minioadmin')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY', 'minioadmin')
+AWS_ENDPOINT_URL = os.getenv('AWS_ENDPOINT', 'http://localhost:9000')
+AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
+
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-
-# Device configuration
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"🔥 Using device: {DEVICE}")
 
+# =============================================================================
+# 1. DÉFINITION DE L'ARCHITECTURE (OBLIGATOIRE POUR LE CHARGEMENT)
+# =============================================================================
+# Ces classes doivent être identiques à celles utilisées lors de l'entraînement
+# pour que pickle puisse reconstruire l'objet.
+
+class TreeNodeConfig(BaseModel):
+    layers: List[int] = Field(default_factory=list)
+    dropout: float = 0.0
+    branches: Dict[str, 'TreeNodeConfig'] = Field(default_factory=dict)
+    tasks: Dict[str, int] = Field(default_factory=dict)
+
+TreeNodeConfig.model_rebuild()
+
+class DynamicTreeBranch(nn.Module):
+    def __init__(self, in_features: int, config: TreeNodeConfig):
+        super().__init__()
+        self.layers_seq = nn.Sequential()
+        current_size = in_features
+        
+        for i, hidden_size in enumerate(config.layers):
+            self.layers_seq.add_module(f"fc_{i}", nn.Linear(current_size, hidden_size))
+            self.layers_seq.add_module(f"act_{i}", nn.ReLU())
+            if config.dropout > 0:
+                self.layers_seq.add_module(f"drop_{i}", nn.Dropout(config.dropout))
+            current_size = hidden_size
+            
+        self.branches = nn.ModuleDict()
+        self.tasks = nn.ModuleDict()
+        
+        for name, branch_cfg in config.branches.items():
+            self.branches[name] = DynamicTreeBranch(current_size, branch_cfg)
+        for name, num_classes in config.tasks.items():
+            self.tasks[name] = nn.Linear(current_size, num_classes)
+
+    def forward(self, x):
+        x = self.layers_seq(x)
+        results = {}
+        for branch in self.branches.values():
+            results.update(branch(x))
+        for name, task_layer in self.tasks.items():
+            results[name] = task_layer(x)
+        return results
+
+class CNN(nn.Module):
+    def __init__(self, filters_list: List[int], tree_structure: TreeNodeConfig):
+        super().__init__()
+        self.filters_list = filters_list
+        # On stocke le dump pour compatibilité, même si on ne l'utilise pas ici
+        self.tree_structure_dict = tree_structure.model_dump() 
+        
+        layers = []
+        in_channels = 3
+        for i, out_channels in enumerate(filters_list):
+            layers.append(nn.Conv2d(in_channels, out_channels, 3, padding=1))
+            layers.append(nn.BatchNorm2d(out_channels))
+            layers.append(nn.ReLU())
+            if i > 0: 
+                layers.append(nn.MaxPool2d(2))
+            in_channels = out_channels
+        self.conv = nn.Sequential(*layers)
+        
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, 64, 64)
+            out = self.conv(dummy)
+            self.flattened_size = out.view(1, -1).size(1)
+            
+        self.tree = DynamicTreeBranch(self.flattened_size, tree_structure)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = x.view(x.size(0), -1)
+        return self.tree(x)
+
+# =============================================================================
+# 2. SERVICE DE PRÉDICTION
+# =============================================================================
 
 class PredictionService:
     def __init__(self):
-        """Initialize the prediction service"""
         self.connection = None
         self.channel = None
-        self.loaded_models = {}  # Cache for loaded models
-        self.target_size = (64, 64)  # (width, height)
+        # Utilisation d'un OrderedDict pour un cache LRU simple
+        self.loaded_models = OrderedDict()
+        self.MAX_CACHE_SIZE = 3 # Garder max 3 modèles en VRAM pour éviter OOM
+        
+        self.target_size = (64, 64)
         self.transform = transforms.Compose([
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                std=[0.229, 0.224, 0.225])
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
+        
+        # S3 Client
+        self.s3_client = boto3.client(
+            's3',
+            endpoint_url=AWS_ENDPOINT_URL,
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=AWS_REGION
+        )
+        print(f"✅ S3 Client configured for {AWS_ENDPOINT_URL}")
+        
         self.setup_connection()
 
+    def setup_connection(self):
+        """Setup RabbitMQ connection with retry logic"""
+        while True:
+            try:
+                parameters = pika.URLParameters(RABBITMQ_URL)
+                self.connection = pika.BlockingConnection(parameters)
+                self.channel = self.connection.channel()
+                self.channel.queue_declare(queue=PREDICTION_QUEUE, durable=True)
+                self.channel.queue_declare(queue=RESULT_QUEUE, durable=True)
+                self.channel.basic_qos(prefetch_count=1)
+                
+                print(f"✅ Connected to RabbitMQ")
+                print(f"📥 Queue: {PREDICTION_QUEUE} | 📤 Queue: {RESULT_QUEUE}")
+                break
+            except Exception as e:
+                print(f"❌ RabbitMQ connection failed: {e}. Retrying in 5s...")
+                time.sleep(5)
+
     def preprocess_image(self, image: Image.Image) -> Image.Image:
-        """
-        Preprocess image using the same method as crop_dataset_images.py:
-        1. Convert to grayscale
-        2. Apply thresholding to detect object
-        3. Find largest contour (face)
-        4. Crop to bounding box
-        5. Resize to 64x64
-        
-        Args:
-            image: PIL Image
-            
-        Returns:
-            Preprocessed PIL Image
-        """
+        """Robust face cropping & resizing"""
         try:
-            # Convert PIL Image to OpenCV format (numpy array)
             img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-            
-            # Convert to grayscale
             gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
             
-            # Thresholding (white background -> inverted binary to get object in white)
+            # Détection basique de contours (simule une détection visage sur fond uni)
             _, thresh = cv2.threshold(gray, 240, 255, cv2.THRESH_BINARY_INV)
-            
-            # Find contours
             contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            if len(contours) == 0:
-                # No contours found, just resize original image
+            if not contours:
                 return image.resize(self.target_size, Image.LANCZOS)
             
-            # Find the largest contour
             largest_contour = max(contours, key=cv2.contourArea)
-            
-            # Get bounding box
             x, y, w, h = cv2.boundingRect(largest_contour)
             
-            # Crop the image
+            # Marge de sécurité
             img_cropped = img_cv[y:y+h, x:x+w]
             
-            # Safety check: verify crop is not empty
-            if img_cropped.size == 0:
-                return image.resize(self.target_size, Image.LANCZOS)
+            if img_cropped.size == 0: return image.resize(self.target_size, Image.LANCZOS)
             
-            # Resize to 64x64 (without preserving aspect ratio)
             img_resized = cv2.resize(img_cropped, self.target_size, interpolation=cv2.INTER_AREA)
-            
-            # Convert back to PIL Image (BGR to RGB)
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-            preprocessed = Image.fromarray(img_rgb)
-            
-            return preprocessed
+            return Image.fromarray(cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB))
             
         except Exception as e:
-            print(f"⚠️ Error in preprocessing: {e}, using simple resize")
-            # Fallback to simple resize if preprocessing fails
+            print(f"⚠️ Preprocessing warning: {e}, falling back to resize")
             return image.resize(self.target_size, Image.LANCZOS)
 
-    def setup_connection(self):
-        """Setup RabbitMQ connection and channels"""
-        try:
-            # Parse RabbitMQ URL
-            parameters = pika.URLParameters(RABBITMQ_URL)
-            
-            # Create connection
-            self.connection = pika.BlockingConnection(parameters)
-            self.channel = self.connection.channel()
-            
-            # Declare queues
-            self.channel.queue_declare(queue=PREDICTION_QUEUE, durable=True)
-            self.channel.queue_declare(queue=RESULT_QUEUE, durable=True)
-            
-            # Set QoS to process one message at a time
-            self.channel.basic_qos(prefetch_count=1)
-            
-            print(f"✅ Connected to RabbitMQ")
-            print(f"📥 Listening on queue: {PREDICTION_QUEUE}")
-            print(f"📤 Will publish results to: {RESULT_QUEUE}")
-        except Exception as e:
-            print(f"❌ Error connecting to RabbitMQ: {e}")
-            raise
-
     def load_model(self, model_uri: str):
-        """
-        Load model from MLflow registry
+        """Load model from MLflow with LRU Caching"""
         
-        Args:
-            model_uri: MLflow model URI (e.g., 'runs:/<run_id>/model')
-            
-        Returns:
-            Loaded PyTorch model
-        """
+        # 1. Si déjà chargé, on le déplace à la fin (le plus récent)
         if model_uri in self.loaded_models:
+            self.loaded_models.move_to_end(model_uri)
             return self.loaded_models[model_uri]
         
+        # 2. Gestion du cache plein : on supprime le premier (le plus vieux)
+        if len(self.loaded_models) >= self.MAX_CACHE_SIZE:
+            oldest_uri, _ = self.loaded_models.popitem(last=False)
+            print(f"🧹 Freeing memory: Unloaded {old_uri}")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        # 3. Chargement depuis MLflow
         try:
-            print(f"📦 Loading model from MLflow: {model_uri}")
+            print(f"📦 Downloading & Loading: {model_uri}")
+            # C'est ici que MLflow a besoin que les classes soient définies
             model = mlflow.pytorch.load_model(model_uri, map_location=DEVICE)
+            model.to(DEVICE)
             model.eval()
+            
+            # 4. Warm-up (Optionnel mais recommandé pour CUDA)
+            with torch.no_grad():
+                dummy = torch.randn(1, 3, 64, 64).to(DEVICE)
+                model(dummy)
+            
             self.loaded_models[model_uri] = model
-            print(f"✅ Model loaded successfully: {model_uri}")
+            print(f"✅ Model ready: {model_uri}")
             return model
+            
         except Exception as e:
-            print(f"❌ Error loading model {model_uri}: {e}")
+            print(f"❌ CRITICAL: Failed to load {model_uri}: {e}")
             raise
 
-    def predict_with_model(self, image_id: str, image_data: str, model_uri: str) -> Dict[str, Any]:
-        """
-        Generate prediction using MLflow model
-        
-        Args:
-            image_id: ID of the image
-            image_data: Base64 encoded image data
-            model_uri: MLflow model URI
-            
-        Returns:
-            Dictionary containing prediction results
-        """
+    def download_image_from_s3(self, bucket_name: str, s3_key: str) -> Image.Image:
         try:
-            # Load model
+            print(f"📥 Downloading from S3: {bucket_name}/{s3_key}")
+            response = self.s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+            image_data = response['Body'].read()
+            return Image.open(BytesIO(image_data)).convert('RGB')
+        except Exception as e:
+            print(f"❌ S3 Download failed: {e}")
+            raise
+
+    def predict_with_model(self, image_id: str, bucket_name: str, s3_key: str, model_uri: str, image_base64: Optional[str] = None) -> Dict[str, Any]:
+        try:
             model = self.load_model(model_uri)
             
-            # Decode image from base64
-            image_bytes = base64.b64decode(image_data)
-            image = Image.open(BytesIO(image_bytes)).convert('RGB')
-            
-            print(f"🖼️ Image {image_id}: Original size={image.size}")
-            
-            # Preprocess image (crop, resize using same method as training)
-            image_preprocessed = self.preprocess_image(image)
-            
-            print(f"✂️ Image {image_id}: After preprocessing size={image_preprocessed.size}")
-            
-            # Apply transforms (normalize)
-            image_tensor = self.transform(image_preprocessed).unsqueeze(0).to(DEVICE)
-            
-            print(f"🔢 Image {image_id}: Tensor shape={image_tensor.shape}, range=[{image_tensor.min():.3f}, {image_tensor.max():.3f}]")
-            
-            # Run prediction
-            with torch.no_grad():
-                outputs = model(image_tensor)
-            
-            print(f"📊 Image {image_id}: Model outputs received")
-            
-            # Parse outputs (5 heads: barbe, moustache, lunettes, taille, couleur)
-            out_barbe, out_moustache, out_lunettes, out_taille, out_couleur = outputs
-            
-            # Convert to predictions
-            pred_barbe = bool(torch.sigmoid(out_barbe.squeeze()).item() > 0.5)
-            pred_moustache = bool(torch.sigmoid(out_moustache.squeeze()).item() > 0.5)
-            pred_lunettes = bool(torch.sigmoid(out_lunettes.squeeze()).item() > 0.5)
-            pred_taille_idx = torch.argmax(out_taille, dim=1).item()
-            pred_couleur_idx = torch.argmax(out_couleur, dim=1).item()
-            
-            # Map indices to labels
-            hair_lengths = ['bald', 'short', 'long']
-            hair_colors = ['blond', 'lightBrown', 'red', 'darkBrown', 'grayBlue']
-            
-            result = {
-                'beard': pred_barbe,
-                'mustache': pred_moustache,
-                'glasses': pred_lunettes,
-                'hairLength': hair_lengths[pred_taille_idx],
-                'hairColor': hair_colors[pred_couleur_idx]
-            }
-            
-            return result
-            
-        except Exception as e:
-            print(f"❌ Error during prediction: {e}")
-            # Fallback to random predictions if model fails
-            return self.generate_fake_prediction(image_id, image_data)
+            # Download & Process
+            if image_base64:
+                try:
+                    print(f"⚡ Using Base64 image for {image_id}")
+                    image_data = base64.b64decode(image_base64)
+                    image = Image.open(BytesIO(image_data)).convert('RGB')
+                except Exception as e:
+                    print(f"⚠️ Base64 decode failed: {e}, falling back to S3")
+                    image = self.download_image_from_s3(bucket_name, s3_key)
+            else:
+                image = self.download_image_from_s3(bucket_name, s3_key)
 
-    def generate_fake_prediction(self, image_id: str, image_data: str) -> Dict[str, Any]:
-        """
-        Generate fake prediction results for testing (fallback)
-        
-        Args:
-            image_id: ID of the image
-            image_data: Base64 encoded image data
+            image_pre = self.preprocess_image(image)
             
-        Returns:
-            Dictionary containing prediction results
-        """        
-        # Generate random fake predictions
-        hair_colors = ['blond', 'lightBrown', 'red', 'darkBrown', 'grayBlue']
-        hair_lengths = ['bald', 'short', 'long']
-        
-        result = {
-            'beard': random.choice([True, False]),
-            'mustache': random.choice([True, False]),
-            'glasses': random.choice([True, False]),
-            'hairColor': random.choice(hair_colors),
-            'hairLength': random.choice(hair_lengths)
-        }
-        
-        return result
+            img_tensor = self.transform(image_pre).unsqueeze(0).to(DEVICE)
+            
+            # Inference
+            with torch.no_grad():
+                # outputs est maintenant un Dict ! {'barbe': tensor, ...}
+                outputs = model(img_tensor)
+            
+            # Parsing dynamique basé sur les clés du dictionnaire
+            result = {}
+            
+            # Mapping des labels (Doit correspondre à l'entraînement)
+            hair_lengths = ['long', 'short', 'bald']
+            hair_colors = ['blond', 'lightBrown', 'red', 'darkBrown', 'grayBlue']
+
+            # Extraction robuste
+            def get_binary(key):
+                if key in outputs:
+                    return bool(torch.sigmoid(outputs[key].squeeze()).item() > 0.5)
+                return False # Valeur par défaut
+                
+            def get_multi(key, labels):
+                if key in outputs:
+                    idx = torch.argmax(outputs[key], dim=1).item()
+                    # Protection contre index out of bounds
+                    return labels[idx] if 0 <= idx < len(labels) else labels[0]
+                return labels[0]
+
+            result['beard'] = get_binary('barbe')
+            result['mustache'] = get_binary('moustache')
+            result['glasses'] = get_binary('lunettes')
+            result['hairLength'] = get_multi('taille_cheveux', hair_lengths)
+            result['hairColor'] = get_multi('couleur_cheveux', hair_colors)
+            
+            print(f"📊 Prediction {image_id}: {result}")
+            return result
+
+        except Exception as e:
+            print(f"❌ Error prediction {image_id}: {e}")
+            raise
 
     def process_prediction_request(self, ch, method, properties, body):
-        """
-        Process incoming prediction request from the queue
-        
-        Args:
-            ch: Channel
-            method: Delivery method
-            properties: Message properties
-            body: Message body (JSON)
-        """
         try:
-            # Parse request
-            request = json.loads(body)
-                        
-            # NestJS microservices wrap messages in {pattern, data} format
-            if 'pattern' in request and 'data' in request:
-                request = request['data']
+            msg = json.loads(body)
+            # Support NestJS Pattern
+            payload = msg.get('data', msg)
             
-            image_id = request.get('imageId')
-            image_data = request.get('imageData')
-            model_uri = request.get('modelName', '')
-                        
-            # Validate required fields
-            if not image_id or not image_data:
-                raise ValueError(f"Missing required fields: imageId={image_id}, imageData={'present' if image_data else 'missing'}")
+            image_id = payload.get('imageId')
+            s3_key = payload.get('s3Key')
+            bucket_name = payload.get('bucketName')
+            model_uri = payload.get('modelName') # ex: "runs:/<run_id>/model" ou "models:/FaceAttr/Production"
+            image_base64 = payload.get('imageBase64')
             
-            # Generate prediction using MLflow model or fallback to fake
-            if model_uri:
-                prediction_result = self.predict_with_model(image_id, image_data, model_uri)
-            else:
-                print(f"⚠️ No model URI provided, using fake predictions")
-                prediction_result = self.generate_fake_prediction(image_id, image_data)
+            if not all([image_id, s3_key, bucket_name, model_uri]):
+                raise ValueError("Missing fields (imageId, s3Key, bucketName or modelName)")
+
+            prediction = self.predict_with_model(image_id, bucket_name, s3_key, model_uri, image_base64)
             
-            # Prepare response
-            response_data = {
-                'imageId': image_id,
-                'modelName': model_uri,
-                'result': prediction_result,
-                'success': True
-            }
-            
-            # Prepare message in NestJS microservice format
-            nestjs_message = {
+            response = {
                 'pattern': 'prediction_result',
-                'data': response_data
+                'data': {
+                    'imageId': image_id,
+                    'modelName': model_uri,
+                    'result': prediction,
+                    'success': True
+                }
             }
             
-            # Publish result to result queue
             self.channel.basic_publish(
                 exchange='',
                 routing_key=RESULT_QUEUE,
-                body=json.dumps(nestjs_message),
-                properties=pika.BasicProperties(
-                    delivery_mode=2,  # Make message persistent
-                    content_type='application/json'
-                )
+                body=json.dumps(response),
+                properties=pika.BasicProperties(delivery_mode=2, content_type='application/json')
             )
-                        
-            # Acknowledge message
             ch.basic_ack(delivery_tag=method.delivery_tag)
             
         except Exception as e:
-            print(f"❌ Error processing prediction request: {e}")
-            
-            # Send error response
-            try:
-                error_data = {
-                    'imageId': request.get('imageId', 'unknown'),
-                    'modelName': request.get('modelName', ''),
-                    'result': None,
-                    'success': False,
-                    'error': str(e)
-                }
-                
-                # Prepare message in NestJS microservice format
-                nestjs_error_message = {
+            print(f"❌ Processing failed: {e}")
+            # Send error if possible
+            if 'image_id' in locals():
+                 err_response = {
                     'pattern': 'prediction_result',
-                    'data': error_data
+                    'data': {'imageId': image_id, 'success': False, 'error': str(e)}
                 }
-                
-                self.channel.basic_publish(
-                    exchange='',
-                    routing_key=RESULT_QUEUE,
-                    body=json.dumps(nestjs_error_message),
-                    properties=pika.BasicProperties(
-                        delivery_mode=2,
-                        content_type='application/json'
-                    )
+                 self.channel.basic_publish(
+                    exchange='', routing_key=RESULT_QUEUE, body=json.dumps(err_response)
                 )
-            except:
-                pass
-            
-            # Reject message
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
-    def start_consuming(self):
-        """Start consuming messages from the prediction queue"""
-        print(f"\n🚀 Prediction service started")
-        print(f"⏳ Waiting for prediction requests... (Press CTRL+C to exit)\n")
-        
-        # Setup consumer
-        self.channel.basic_consume(
-            queue=PREDICTION_QUEUE,
-            on_message_callback=self.process_prediction_request
-        )
-        
+    def start(self):
+        print("🚀 Service Started. Waiting for requests...")
         try:
-            # Start consuming
+            self.channel.basic_consume(queue=PREDICTION_QUEUE, on_message_callback=self.process_prediction_request)
             self.channel.start_consuming()
         except KeyboardInterrupt:
-            print("\n🛑 Stopping prediction service...")
             self.stop()
-        except Exception as e:
-            print(f"\n❌ Error in consumer: {e}")
-            self.stop()
-
+            
     def stop(self):
-        """Stop the prediction service and close connections"""
-        if self.channel:
-            self.channel.stop_consuming()
-        if self.connection:
-            self.connection.close()
-        print("👋 Prediction service stopped")
-
-
-def main():
-    """Main entry point"""
-    print("=" * 60)
-    print("🤖 ML Prediction Service")
-    print("=" * 60)
-    
-    service = PredictionService()
-    service.start_consuming()
-
+        if self.connection: self.connection.close()
+        print("👋 Service Stopped")
 
 if __name__ == '__main__':
-    main()
+    service = PredictionService()
+    service.start()

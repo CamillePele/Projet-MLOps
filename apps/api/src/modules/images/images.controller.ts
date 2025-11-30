@@ -67,6 +67,12 @@ export class ImagesController {
         enum: ['bald', 'short', 'long'],
         description: 'Filter by hair length',
     })
+    @ApiQuery({
+        name: 'model',
+        required: false,
+        type: String,
+        description: 'Filter by model name',
+    })
     @ApiResponse({
         status: 200,
         description: 'List of images',
@@ -80,6 +86,7 @@ export class ImagesController {
         @Query('glasses') glasses?: boolean,
         @Query('hairColor') hairColor?: string,
         @Query('hairLength') hairLength?: string,
+        @Query('model') model?: string,
     ) {
         return this.imagesService.findAll(limit, offset, {
             beard,
@@ -87,6 +94,7 @@ export class ImagesController {
             glasses,
             hairColor,
             hairLength,
+            model,
         });
     }
 
@@ -103,19 +111,23 @@ export class ImagesController {
     @ApiResponse({ status: 200, description: 'Image file' })
     @ApiResponse({ status: 404, description: 'Image not found' })
     async getImageFile(@Param('filename') filename: string, @Res() res: Response) {
-        if (!this.fileService.imageFileExists(filename)) {
+        const exists = await this.fileService.imageFileExists(filename);
+        if (!exists) {
             throw new NotFoundException('Image file not found');
         }
 
-        const filePath = this.fileService.getImageFilePath(filename);
         const ext = filename.substring(filename.lastIndexOf('.')).toLowerCase();
         const contentType = IMAGE_MIME_TYPES[ext] || 'application/octet-stream';
 
         res.setHeader('Content-Type', contentType);
         res.setHeader('Cache-Control', 'public, max-age=31536000');
 
-        const fileStream = fs.createReadStream(filePath);
-        fileStream.pipe(res);
+        try {
+            const fileStream = await this.fileService.getFileStream(filename);
+            fileStream.pipe(res);
+        } catch (error) {
+            throw new NotFoundException('Image file could not be retrieved');
+        }
     }
 
     @Get(':id')
