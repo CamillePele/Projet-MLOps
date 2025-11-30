@@ -1,5 +1,5 @@
 import {
-    Column, CreateDateColumn, Entity, JoinColumn, ManyToOne, OneToMany, PrimaryGeneratedColumn,
+    Column, CreateDateColumn, Entity, JoinTable, ManyToMany, OneToMany, PrimaryGeneratedColumn,
     UpdateDateColumn
 } from 'typeorm';
 
@@ -21,14 +21,17 @@ export class Image {
     isTraining: boolean;
 
     @Column({ nullable: true })
+    imageHash: string;
+
+    @Column({ nullable: true })
     filename: string;
 
     @Column({ nullable: true })
     imageUrl: string;
 
-    @ManyToOne(() => Batch, (batch) => batch.images, { nullable: true })
-    @JoinColumn({ name: 'batchId' })
-    batch: Batch;
+    @ManyToMany(() => Batch, (batch) => batch.images)
+    @JoinTable({ name: 'batch_images' })
+    batches: Batch[];
 
     @OneToMany(() => Prediction, (processed) => processed.image)
     processeds: Prediction[];

@@ -13,7 +13,7 @@ All URIs are relative to *http://localhost*
 
 ## imagesControllerFindAll
 
-> Array&lt;ImageDto&gt; imagesControllerFindAll(limit, offset, beard, mustache, glasses, hairColor, hairLength)
+> Array&lt;ImageDto&gt; imagesControllerFindAll(limit, offset, beard, mustache, glasses, hairColor, hairLength, model)
 
 Get all images
 
@@ -47,6 +47,8 @@ async function example() {
     hairColor: hairColor_example,
     // 'bald' | 'short' | 'long' | Filter by hair length (optional)
     hairLength: hairLength_example,
+    // string | Filter by model name (optional)
+    model: model_example,
   } satisfies ImagesControllerFindAllRequest;
 
   try {
@@ -73,6 +75,7 @@ example().catch(console.error);
 | **glasses** | `boolean` | Filter by glasses presence | [Optional] [Defaults to `undefined`] |
 | **hairColor** | `blond`, `lightBrown`, `red`, `darkBrown`, `grayBlue` | Filter by hair color | [Optional] [Defaults to `undefined`] [Enum: blond, lightBrown, red, darkBrown, grayBlue] |
 | **hairLength** | `bald`, `short`, `long` | Filter by hair length | [Optional] [Defaults to `undefined`] [Enum: bald, short, long] |
+| **model** | `string` | Filter by model name | [Optional] [Defaults to `undefined`] |
 
 ### Return type
 

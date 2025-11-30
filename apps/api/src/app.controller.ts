@@ -16,29 +16,4 @@ export class AppController {
   getHello(): string {
     return this.appService.getHello();
   }
-
-  @Post('upload')
-  @ApiTags('images')
-  @ApiOperation({
-    summary: 'Upload images for prediction',
-    description: 'Upload a single image or a ZIP archive containing multiple images. The images will be sent to the prediction queue for processing.'
-  })
-  @ApiConsumes('multipart/form-data')
-  @ApiBody({
-    description: 'Image file or ZIP archive',
-    type: UploadImageDto,
-  })
-  @ApiResponse({
-    status: 201,
-    description: 'Images successfully uploaded and sent for prediction',
-    type: UploadImageResponseDto
-  })
-  @ApiResponse({ status: 400, description: 'Invalid file type or bad request' })
-  @UseInterceptors(FileInterceptor('file'))
-  async uploadFile(
-    @UploadedFile() file: Express.Multer.File,
-    @Body('modelName') modelName?: string
-  ): Promise<UploadImageResponseDto> {
-    return this.appService.updloadFile(file, modelName);
-  }
 }

@@ -1,0 +1,43 @@
+{
+  "layers": [
+    512
+  ],
+  "dropout": 0.29526633108360034,
+  "branches": {
+    "visage": {
+      "layers": [
+        128,
+        64
+      ],
+      "dropout": 0.0,
+      "branches": {},
+      "tasks": {
+        "barbe": 1,
+        "moustache": 1,
+        "lunettes": 1
+      }
+    },
+    "cheveux": {
+      "layers": [
+        256,
+        128
+      ],
+      "dropout": 0.0,
+      "branches": {
+        "split_hair": {
+          "layers": [
+            32
+          ],
+          "dropout": 0.0,
+          "branches": {},
+          "tasks": {
+            "taille_cheveux": 3,
+            "couleur_cheveux": 5
+          }
+        }
+      },
+      "tasks": {}
+    }
+  },
+  "tasks": {}
+}

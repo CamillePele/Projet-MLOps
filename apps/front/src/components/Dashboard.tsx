@@ -27,7 +27,8 @@ export function Dashboard() {
         mustache?: boolean;
         glasses?: boolean;
         hairColor?: 'blond' | 'lightBrown' | 'red' | 'darkBrown' | 'grayBlue';
-        hairLength?: 'bald' | 'short' | 'long';
+        hairLength?: 'long' | 'short' | 'bald';
+        model?: string;
     }>({});
 
     const handleFilterChange = (key: keyof typeof filters, value: string) => {

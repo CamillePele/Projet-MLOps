@@ -1,5 +1,5 @@
 import {
-    Column, CreateDateColumn, Entity, OneToMany, PrimaryGeneratedColumn, UpdateDateColumn
+    Column, CreateDateColumn, Entity, ManyToMany, PrimaryGeneratedColumn, UpdateDateColumn
 } from 'typeorm';
 
 import { Image } from './image.entity';
@@ -44,7 +44,7 @@ export class Batch {
     @Column({ nullable: true })
     modelName: string;
 
-    @OneToMany(() => Image, (image) => image.batch)
+    @ManyToMany(() => Image, (image) => image.batches)
     images: Image[];
 
     // Computed property

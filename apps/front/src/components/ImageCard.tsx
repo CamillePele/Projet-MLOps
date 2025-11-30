@@ -11,7 +11,7 @@ export function ImageCard({ image }: { image: ImageDto }) {
         <Card className="overflow-hidden py-0 h-fit transition-shadow hover:shadow-lg">
             <div className="relative aspect-square">
                 <img
-                    src={`http://localhost:3000/images/file/${image.id}.${image.filename?.split('.').pop()}`}
+                    src={`${import.meta.env.VITE_API_URL}${image.imageUrl}`}
                     alt="Uploaded"
                     className="object-cover w-full h-full [image-rendering:pixelated]"
                     loading="lazy"

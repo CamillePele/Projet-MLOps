@@ -24,10 +24,21 @@ export class ImagesService {
             glasses?: boolean;
             hairColor?: string;
             hairLength?: string;
+            model?: string;
         } = {},
     ): Promise<Image[]> {
-        const query = this.imageRepository.createQueryBuilder('image')
-            .leftJoinAndSelect('image.processeds', 'prediction')
+        const query = this.imageRepository.createQueryBuilder('image');
+
+        if (filters.model) {
+            // If model is specified, only load predictions for that model
+            // and only return images that have such predictions
+            query.innerJoinAndSelect('image.processeds', 'prediction', 'prediction.model = :model', { model: filters.model });
+        } else {
+            // Otherwise load all predictions
+            query.leftJoinAndSelect('image.processeds', 'prediction');
+        }
+
+        query
             .orderBy('image.createdAt', 'DESC')
             .take(limit)
             .skip(offset);

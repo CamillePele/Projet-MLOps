@@ -33,6 +33,7 @@ export interface ImagesControllerFindAllRequest {
     glasses?: boolean;
     hairColor?: ImagesControllerFindAllHairColorEnum;
     hairLength?: ImagesControllerFindAllHairLengthEnum;
+    model?: string;
 }
 
 export interface ImagesControllerFindOneRequest {
@@ -85,6 +86,10 @@ export class ImagesApi extends runtime.BaseAPI {
 
         if (requestParameters['hairLength'] != null) {
             queryParameters['hairLength'] = requestParameters['hairLength'];
+        }
+
+        if (requestParameters['model'] != null) {
+            queryParameters['model'] = requestParameters['model'];
         }
 
         const headerParameters: runtime.HTTPHeaders = {};

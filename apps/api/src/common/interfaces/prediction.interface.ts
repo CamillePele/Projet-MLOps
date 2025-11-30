@@ -7,13 +7,15 @@ export interface IPredictionResult {
     mustache: boolean;
     glasses: boolean;
     hairColor: 'blond' | 'lightBrown' | 'red' | 'darkBrown' | 'grayBlue';
-    hairLength: 'bald' | 'short' | 'long';
+    hairLength: 'long' | 'short' | 'bald';
 }
 
 export interface IPredictionRequest {
     imageId: string;
-    imageData: string; // Base64 encoded image
+    s3Key: string;
+    bucketName: string;
     modelName: string;
+    imageBase64?: string;
 }
 
 export interface IPredictionResponse {

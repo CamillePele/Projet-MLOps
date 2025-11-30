@@ -119,7 +119,7 @@ export function BatchDetail({ batchId, onBack }: BatchDetailProps) {
     }
 
     const progress = batch?.progress || 0;
-    
+
     // Flatten all pages of images and deduplicate
     const allImages = imagesData?.pages.flatMap((page) => page) || [];
     const images = Array.from(
@@ -225,7 +225,7 @@ export function BatchDetail({ batchId, onBack }: BatchDetailProps) {
                                     <ImageCard key={image.id} image={image} />
                                 ))}
                             </div>
-                            
+
                             {/* Loading indicator for infinite scroll */}
                             <div ref={ref} className="flex justify-center py-4 mt-4">
                                 {isFetchingNextPage && <Skeleton className="h-8 w-8 rounded-full" />}
@@ -257,7 +257,7 @@ function ImageCard({ image }: { image: ImageDto }) {
         <Card className="overflow-hidden">
             <div className="relative aspect-square">
                 <img
-                    src={`http://localhost:3000${image.imageUrl}`}
+                    src={`${import.meta.env.VITE_API_URL}${image.imageUrl}`}
                     alt={image.filename || 'Image'}
                     className="object-cover w-full h-full"
                     loading="lazy"

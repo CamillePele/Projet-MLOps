@@ -16,7 +16,8 @@ interface ImageGridProps {
         mustache?: boolean;
         glasses?: boolean;
         hairColor?: 'blond' | 'lightBrown' | 'red' | 'darkBrown' | 'grayBlue';
-        hairLength?: 'bald' | 'short' | 'long';
+        hairLength?: 'long' | 'short' | 'bald';
+        model?: string;
     };
 }
 
@@ -79,7 +80,7 @@ export function ImageGrid({ filters }: ImageGridProps) {
     }
 
     const allImages = data?.pages.flatMap((page) => page) || [];
-    
+
     // Deduplicate images by id to avoid key conflicts
     const images = Array.from(
         new Map(allImages.map((image: ImageDto) => [image.id, image])).values()

@@ -85,7 +85,7 @@ export class BatchService {
 
         // Get paginated images
         const images = await this.imageRepository.find({
-            where: { batch: { id } },
+            where: { batches: { id } },
             relations: ['processeds'],
             take: limit,
             skip: offset,
