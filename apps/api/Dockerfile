@@ -6,7 +6,7 @@ RUN npm install -g pnpm
 
 COPY package.json pnpm-lock.yaml ./
 
-RUN pnpm install
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile --store-dir /pnpm/store
 
 COPY . .
 

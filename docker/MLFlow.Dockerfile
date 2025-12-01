@@ -3,7 +3,7 @@ FROM python:3.10-slim
 WORKDIR /app
 
 # Installation des dépendances (mlflow, postgres driver, boto3 pour S3)
-RUN pip install mlflow psycopg2-binary boto3
+RUN --mount=type=cache,target=/root/.cache/pip pip install mlflow psycopg2-binary boto3
 
 EXPOSE 5000
 

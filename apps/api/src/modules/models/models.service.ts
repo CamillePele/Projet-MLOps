@@ -38,7 +38,7 @@ export class ModelsService {
 
     // Le nom de l'expérience doit correspondre exactement à celui dans training.py
     private get experimentName(): string {
-        return process.env.MLFLOW_EXPERIMENT_NAME || 'Architecture_Search_Final';
+        return process.env.MLFLOW_EXPERIMENT_NAME || 'Classification';
     }
 
     async getModels(): Promise<ModelsResponseDto> {
