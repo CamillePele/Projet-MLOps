@@ -231,19 +231,19 @@ export class BatchService {
         };
 
         const hairLengthMap = {
-            'bald': 0,
+            'long': 0,
             'short': 1,
-            'long': 2
+            'bald': 2
         };
 
         // CSV header
         const headers = [
-            'Filename',
-            'Beard',
-            'Mustache',
-            'Glasses',
-            'Hair Color',
-            'Hair Length',
+            'image_name',
+            'barbe',
+            'moustache',
+            'lunettes',
+            'taille_cheveux',
+            'couleur_cheveux',
         ];
 
         // CSV rows - only include images with predictions
@@ -252,13 +252,16 @@ export class BatchService {
             .map(image => {
                 const prediction = image.processeds[0]; // Get first (latest) prediction
 
+                // Filename without extension
+                const filename = image.filename.split('.').slice(0, -1).join('.');
+
                 return [
-                    image.filename || 'unknown',
+                    filename || 'unknown',
                     prediction.result.beard ? 1 : 0,
                     prediction.result.mustache ? 1 : 0,
                     prediction.result.glasses ? 1 : 0,
-                    hairColorMap[prediction.result.hairColor] ?? -1,
                     hairLengthMap[prediction.result.hairLength] ?? -1,
+                    hairColorMap[prediction.result.hairColor] ?? -1,
                 ];
             });
 
